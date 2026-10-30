@@ -1,0 +1,13 @@
+# Deployment values. Copied from .env.example and never committed.
+.env
+
+# Nix build artefacts
+result
+result-*
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+.direnv/
+result
