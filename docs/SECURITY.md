@@ -404,21 +404,29 @@ HSTS, `X-Content-Type-Options` and `Referrer-Policy` are set, and the
 
 ### 6.6 Secrets live in files, never in the configuration
 
-Every secret on these machines lives in `/etc/nix-vps/` (mode 0700, root
-only), and the Nix configuration holds only the **path**:
+Every secret on these machines lives in `secrets/` in the repository checkout
+(mode 0700, files 0600), and the Nix configuration holds only the **path**:
 
 | Secret | Mechanism | Notes |
 | --- | --- | --- |
-| Portainer setup token | `docker run --env-file /etc/nix-vps/portainer.env` | Rendered by `virtualisation.oci-containers.containers.<name>.environmentFiles`. |
-| Caddy environment | `EnvironmentFile=-/etc/nix-vps/caddy.env` | The `-` prefix makes it optional; systemd ignores a missing file. |
+| Portainer setup token | `docker run --env-file <checkout>/secrets/portainer.env` | Rendered by `virtualisation.oci-containers.containers.<name>.environmentFiles`. |
+| Caddy environment | `EnvironmentFile=-<checkout>/secrets/caddy.env` | The `-` prefix makes it optional; systemd ignores a missing file. |
 
-The Portainer administrator account is created by you in the browser during
-the first-run setup. The configuration never holds its credentials.
+The path is written in the configuration **relative to the checkout**, never
+as an absolute path. The checkout root itself is resolved at evaluation time
+and exported by `scripts/rebuild.sh` as `NIX_VPS_ROOT`, so the same
+configuration works wherever the repository is cloned. The Portainer
+administrator account is created by you in the browser during the first-run
+setup. The configuration never holds its credentials.
 
 Three properties follow from this:
 
 1. **Nothing enters the Nix store.** The store is world-readable, so a secret
-   written into it is a secret published. A path is not.
+   written into it is a secret published. A path is not. The secret files are
+   gitignored, and the flake is evaluated from the *tracked* tree
+   (`git+file://`), so they are never copied into the store at all.
+   `scripts/rebuild.sh` refuses to run if any file in the secrets directory is
+   tracked by git, which is the one way they could get in.
 2. **Nothing appears on the command line.** `docker run --env-file` keeps the
    value out of `ps` and out of the systemd unit file. The alternative,
    `environment = { KEY = "value"; }`, renders `-e KEY=value` and leaks into
@@ -434,7 +442,7 @@ secret, use `LoadCredential` instead, which exposes the file at
 `/run/credentials/<unit>/<name>` to the service and nothing else:
 
 ```nix
-systemd.services.example.serviceConfig.LoadCredential = [ "token:/etc/nix-vps/token" ];
+systemd.services.example.serviceConfig.LoadCredential = [ "token:<checkout>/secrets/token" ];
 ```
 
 **Portainer's own flags, from its source** (`api/cli/cli.go`):

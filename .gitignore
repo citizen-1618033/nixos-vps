@@ -1,6 +1,11 @@
 # Deployment values. Copied from .env.example and never committed.
 .env
 
+# The per-machine secret files. They live in the checkout, next to the
+# configuration that reads them, and are never committed and never copied
+# into the Nix store.
+secrets/
+
 # Nix build artefacts
 result
 result-*

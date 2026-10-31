@@ -95,6 +95,7 @@ PUBLIC_DOMAIN=example.com
 ACME_EMAIL=admin@example.com
 PUBLIC_IP=203.0.113.10
 FLAKE_OUTPUT=nixos
+SECRETS_DIR=secrets
 ```
 
 * `PUBLIC_DOMAIN` — the base domain this machine serves. The public hostnames
@@ -105,6 +106,8 @@ FLAKE_OUTPUT=nixos
   serves needs a DNS A record pointing here (§1).
 * `FLAKE_OUTPUT` — the flake output to build: the file name of the machine in
   `hosts/`, without the `.nix` extension.
+* `SECRETS_DIR` — where the secret files live, relative to the repository
+  root. Defaults to `secrets`.
 
 `.env` is gitignored and never committed. It is read by `scripts/rebuild.sh`,
 which exports the values and evaluates the flake with `--impure` — a flake
@@ -136,10 +139,10 @@ a warning. That warning is the reminder that you have not finished.
 
 ## 4. Secrets
 
-The configuration keeps every machine's secrets in one directory,
-`/etc/nix-vps` (mode 0700, root only). Nothing is committed to git, and
-nothing lands in the Nix store — Nix only ever holds the *path* to a file, so
-no secret is readable by everyone on the box.
+The configuration keeps every machine's secrets in one directory, `secrets/`
+in the repository root (mode 0700, files 0600). Nothing is committed to git,
+and nothing lands in the Nix store — Nix only ever holds the *path* to a
+file, so no secret is readable by everyone on the box.
 
 Create the directory and the files:
 
@@ -148,19 +151,25 @@ Create the directory and the files:
 ```
 
 ```
-/etc/nix-vps/
+secrets/
   portainer.env     Portainer container environment   (docker run --env-file)
   caddy.env         Caddy environment                 (optional)
 ```
 
+The directory is gitignored. If you change `SECRETS_DIR` in `.env`, add the
+new directory to `.gitignore` too — a *tracked* secret file would be copied
+into the Nix store, which is world-readable. `scripts/rebuild.sh` checks for
+that and refuses to run if it finds one.
+
 ### The Portainer setup token
 
 A fresh Portainer refuses to be claimed by anyone who finds the port, so it
-prints a one-time setup token. You do not have to scrape it out of the logs:
-put your own token in the env file instead.
+needs a one-time setup token. `scripts/init-secrets.sh` generates one for
+you and writes it to `secrets/portainer.env`. You do not have to scrape it
+out of the logs:
 
 ```bash
-openssl rand -hex 16 | sed 's/^/PORTAINER_SETUP_TOKEN=/' >> /etc/nix-vps/portainer.env
+grep PORTAINER_SETUP_TOKEN /root/nix-vps/secrets/portainer.env
 ```
 
 Portainer reads `PORTAINER_SETUP_TOKEN` from its environment, and the token
@@ -252,11 +261,11 @@ journalctl -u docker-portainer.service -f
 Portainer 2.43 and newer require a one-time setup token, so that a freshly
 started instance cannot be claimed by somebody else.
 
-If you set `PORTAINER_SETUP_TOKEN` in `/etc/nix-vps/portainer.env` (§4), use
+If you set `PORTAINER_SETUP_TOKEN` in `secrets/portainer.env` (§4), use
 that one:
 
 ```bash
-grep PORTAINER_SETUP_TOKEN /etc/nix-vps/portainer.env
+grep PORTAINER_SETUP_TOKEN /root/nix-vps/secrets/portainer.env
 ```
 
 Open `https://portainer.app.example.com` in a browser, paste the token,
@@ -374,7 +383,7 @@ in
     { name = "other.${env.domain}"; upstream = "portainer"; }
   ];
   secrets = {
-    dir = "/etc/nix-vps";
+    dir = env.secretsDir;
   };
 }
 ```
@@ -382,7 +391,8 @@ in
 `acmeEmail` is required — the modules read it from `hostConfig` and the
 evaluation fails without it. `domain`, `publicIp` and `secrets` are optional
 and fall back to a placeholder. `env` is the same `../lib/env.nix` that reads
-the deployment values from the environment.
+the deployment values from the environment. The `secrets` path is relative to
+the checkout, so a machine needs no absolute path anywhere.
 
 ```bash
 FLAKE_OUTPUT=other ./scripts/rebuild.sh

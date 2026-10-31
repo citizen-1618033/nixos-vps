@@ -25,6 +25,9 @@
   hostConfig,
   ...
 }:
+let
+  env = import ./lib/env.nix;
+in
 {
   imports = [
     # virtio_scsi / virtio_blk and friends in the initrd so the image boots on
@@ -58,5 +61,11 @@
       hostConfig.publicIp is still the placeholder "203.0.113.10".
       Set PUBLIC_IP in .env to this machine's public IPv4 address, and point
       each of the DNS A records at it.
+    ''
+    ++ lib.optional (!env.repoRootIsCheckout) ''
+      The checkout root is unknown, so the secret files are looked for in the
+      flake's own source directory, where they are not. Build with
+      scripts/rebuild.sh, which tells the configuration where the checkout
+      is.
     '';
 }

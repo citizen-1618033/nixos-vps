@@ -65,7 +65,8 @@ not a machine: it is never registered as a flake output of its own.
 A `hosts/<name>.nix` file needs `hostname`, `vhosts` and `acmeEmail` — the
 modules read them from the host config, and the evaluation fails without
 them. `domain`, `publicIp` and `secrets` are optional (they fall back to a
-placeholder). See `hosts/nixos.nix` for the shape.
+placeholder). The `secrets` path is relative to the checkout. See
+`hosts/nixos.nix` for the shape.
 
 ```bash
 ./scripts/rebuild.sh              # this VPS
@@ -106,9 +107,10 @@ instance and are left alone.
 | `flake.nix` | Flake entry point. Pins nixpkgs to the `nixos-26.05` branch, discovers the machines in `hosts/`. |
 | `flake.lock` | The exact nixpkgs revision. Do not edit by hand. |
 | `.env.example` | Template for the deployment values. Copy it to `.env`. |
-| `lib/env.nix` | Reads the deployment values from the environment. |
+| `lib/env.nix` | Reads the deployment values from the environment, and resolves every path against the checkout. |
 | `hosts/nixos.nix` | This machine: hostname, public hostnames, secret paths. **Edit this.** |
 | `modules/secrets.nix` | Wires the per-machine secret files to the services that need them. |
+| `secrets/` | The per-machine secret files. Gitignored, never in the Nix store. **Created by `scripts/init-secrets.sh`.** |
 | `scripts/init-secrets.sh` | Creates the secret directory and files on a machine. |
 | `scripts/rebuild.sh` | Rebuilds the machine with the values from `.env`. |
 | `configuration.nix` | Module wiring and the placeholder warnings. |
@@ -140,12 +142,20 @@ $EDITOR .env
 | `ACME_EMAIL` | The contact address registered with the ACME certificate authority. |
 | `PUBLIC_IP` | The public IPv4 address of this machine. Every hostname it serves needs a DNS A record pointing here. The configuration warns while this is still the placeholder. |
 | `FLAKE_OUTPUT` | The flake output to build: the file name of the machine in `hosts/`, without the `.nix` extension. |
+| `SECRETS_DIR` | Where the secret files live, relative to the repository root. Defaults to `secrets`. |
 
 `.env` is gitignored. Nix cannot read it directly — a flake evaluation is
 pure, so it cannot see the environment — so `scripts/rebuild.sh` sources the
 file, exports the values, and evaluates the flake with `--impure`. Without
 those values every lookup falls back to its placeholder (`example.com`), so a
 plain checkout always evaluates to something harmless.
+
+**Nothing in this repository names an absolute path.** Every file the
+configuration refers to is written as a path relative to the checkout, and
+the checkout root itself is resolved at evaluation time — `scripts/rebuild.sh`
+exports it as `NIX_VPS_ROOT`. The same is true of the credentials: they are
+not in the configuration at all, only the *paths* to the files that hold
+them.
 
 ---
 
@@ -164,7 +174,6 @@ $EDITOR .env
 
 # 2. Create the secret files (mode 0600, not in git).
 ./scripts/init-secrets.sh
-openssl rand -hex 16 | sed 's/^/PORTAINER_SETUP_TOKEN=/' >> /etc/nix-vps/portainer.env
 
 # 3. Confirm DNS already points here.
 dig +short portainer.app.example.com
@@ -202,7 +211,7 @@ The reasoning and the primary source for every line of that table is in
 ## Managing applications
 
 Point a browser at `https://portainer.app.$PUBLIC_DOMAIN` and paste the
-`PORTAINER_SETUP_TOKEN` from `/etc/nix-vps/portainer.env`. From there:
+`PORTAINER_SETUP_TOKEN` from `secrets/portainer.env`. From there:
 **Containers → Add container**, or **Stacks → Add stack** for compose files.
 
 Application secrets are Portainer's job, not Nix's: set them on the container
@@ -236,19 +245,25 @@ Two things to know:
 
 ## Secrets
 
-Per-machine secret files live in `/etc/nix-vps/` (mode 0700, root only), never
-in git and never in the Nix store — Nix only ever holds the *path*:
+Per-machine secret files live in `secrets/` inside the checkout (mode 0700,
+files 0600), never in git and never in the Nix store — Nix only ever holds
+the *path*:
 
 | File | Fed to | Contains |
 |---|---|---|
 | `portainer.env` | Portainer container, `docker run --env-file` | `PORTAINER_SETUP_TOKEN=…` |
 | `caddy.env` | Caddy, `EnvironmentFile=-…` | optional (ACME EAB etc.) |
 
-`scripts/init-secrets.sh` creates the directory and the files. Because the
-setup token comes from an env file rather than the command line, it never
-appears in `ps`, in the systemd unit, or in the world-readable Nix store. The
-Portainer administrator account is created by you in the browser during the
-first-run setup; the configuration never holds its credentials.
+`scripts/init-secrets.sh` creates the directory, creates the files, and
+generates the Portainer setup token for you. Because the setup token comes
+from an env file rather than the command line, it never appears in `ps`, in
+the systemd unit, or in the world-readable Nix store. The Portainer
+administrator account is created by you in the browser during the first-run
+setup; the configuration never holds its credentials.
+
+The directory is gitignored, and `scripts/rebuild.sh` refuses to run if any
+file in it is tracked by git — a tracked file would be copied into the Nix
+store, which is world-readable.
 
 ---
 

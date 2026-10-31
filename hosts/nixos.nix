@@ -70,9 +70,13 @@ in
 
   # Secret files for this machine.
   #
+  # The path is relative to the repository root, so it follows the checkout
+  # wherever it lives and never has to be an absolute path. The default is
+  # <checkout>/secrets.
+  #
   # These are paths only. The contents live on the VPS, not in git. Run
   # scripts/init-secrets.sh to create the directory and the files.
   secrets = {
-    dir = "/etc/nix-vps";
+    dir = env.secretsDir;
   };
 }

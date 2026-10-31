@@ -1,24 +1,44 @@
 #!/usr/bin/env bash
 # Create the secret files this configuration expects.
 #
-# The files are created empty, mode 0600, owned by root. You fill them in
-# yourself. They are never in git and never in the Nix store -- Nix only
-# ever holds the *path* to a file.
+# The files live in the repository checkout, in the directory named by
+# SECRETS_DIR (default: "secrets", i.e. <checkout>/secrets). The directory is
+# gitignored, so nothing in it is ever committed and nothing in it ever
+# reaches the Nix store -- Nix only ever holds the *path* to a file.
 #
-# Usage: scripts/init-secrets.sh [directory]      (default: /etc/nix-vps)
+# The files are created mode 0600, owned by whoever runs this script. The
+# Portainer setup token is generated for you; everything else is empty for
+# you to fill in.
+#
+# Usage: scripts/init-secrets.sh [directory]
+#
+#   directory  where to put the files, relative to the repository root.
+#              Defaults to $SECRETS_DIR, or "secrets".
 #
 # Run this once per machine, before the first `nixos-rebuild switch`.
 
 set -euo pipefail
 
-dir="${1:-/etc/nix-vps}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "error: must run as root (it creates $dir with root-only permissions)" >&2
-  exit 1
+# Read the deployment values, if there are any, so that this script and
+# scripts/rebuild.sh agree on where the files live.
+env_file="${ENV_FILE:-$repo_root/.env}"
+if [ -f "$env_file" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_file"
+  set +a
 fi
 
-install -d -m 0700 -o root -g root "$dir"
+# The secrets directory, relative to the checkout unless it is absolute.
+dir="${1:-${SECRETS_DIR:-secrets}}"
+case "$dir" in
+  /*) ;;
+  *) dir="$repo_root/$dir" ;;
+esac
+
+install -d -m 0700 "$dir"
 
 create() {
   file="$1"
@@ -26,7 +46,6 @@ create() {
     echo "kept     $file (already exists, not modified)"
   else
     : >"$file"
-    chown root:root "$file"
     chmod 0600 "$file"
     echo "created  $file"
   fi
@@ -35,20 +54,33 @@ create() {
 create "$dir/portainer.env"
 create "$dir/caddy.env"
 
+# The Portainer setup token: a fresh Portainer refuses to be claimed by
+# anyone who finds the port, so it needs a one-time token. Generate one here
+# instead of asking the operator to invent one, and never write it down
+# anywhere but the file that needs it.
+if ! grep -q '^PORTAINER_SETUP_TOKEN=' "$dir/portainer.env"; then
+  # 16 random bytes, hex encoded. Read from /dev/urandom rather than from
+  # openssl, which is not necessarily on PATH on NixOS.
+  token="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  printf 'PORTAINER_SETUP_TOKEN=%s\n' "$token" >>"$dir/portainer.env"
+  chmod 0600 "$dir/portainer.env"
+  echo "token    $dir/portainer.env (setup token generated)"
+fi
+
 cat <<EOF
 
 Next steps
 ----------
-1. Generate a Portainer setup token and put it in $dir/portainer.env:
+1. Read the Portainer setup token:
 
-     openssl rand -hex 16 | sed 's/^/PORTAINER_SETUP_TOKEN=/' >> $dir/portainer.env
+     grep PORTAINER_SETUP_TOKEN $dir/portainer.env
 
-   The token stays valid until you complete the first-run setup, so there is
-   no time pressure. You can delete the line afterwards.
+   It stays valid until you complete the first-run setup, so there is no
+   time pressure. You can delete the line afterwards.
 
 2. Deploy the configuration:
 
-     cd /root/nix-vps && ./scripts/rebuild.sh
+     cd $repo_root && ./scripts/rebuild.sh
 
 3. Open https://portainer.app.<your-domain> and paste the token.
 
