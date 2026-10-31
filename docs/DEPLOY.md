@@ -211,8 +211,16 @@ provider's original `/etc/nixos/configuration.nix`.
 ## 6. Verify
 
 ```bash
-# Firewall: only 22 and 443 should be open.
+# Firewall: only 22, 80 and 443 should be open.
+#   80 is needed for the ACME HTTP-01 challenge and Caddy's HTTP->HTTPS redirect.
 sudo iptables -S nixos-fw | grep -E 'dport|icmp'
+
+# The machine has an address and the network is up.
+#   cloud-init owns IP assignment here (see modules/host.nix), so there are no
+#   NixOS-side networkd units; if this prints nothing, the boot stalled on
+#   systemd-networkd-wait-online.
+ip -br addr
+cloud-init status --long
 
 # Services
 systemctl status docker.service caddy.service docker-portainer.service fail2ban.service
@@ -350,8 +358,18 @@ file name becomes the flake output name:
 
 ```nix
 # hosts/other.nix
+let
+  env = import ../lib/env.nix;
+in
 {
   hostname = "other";
+
+  domain = env.domain;
+
+  acmeEmail = env.acmeEmail;
+
+  publicIp = env.publicIp;
+
   vhosts = [
     { name = "other.${env.domain}"; upstream = "portainer"; }
   ];
@@ -360,6 +378,11 @@ file name becomes the flake output name:
   };
 }
 ```
+
+`acmeEmail` is required — the modules read it from `hostConfig` and the
+evaluation fails without it. `domain`, `publicIp` and `secrets` are optional
+and fall back to a placeholder. `env` is the same `../lib/env.nix` that reads
+the deployment values from the environment.
 
 ```bash
 FLAKE_OUTPUT=other ./scripts/rebuild.sh

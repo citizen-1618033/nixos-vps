@@ -14,10 +14,10 @@ repository.
 ```
                        internet
                           │
-                    :22   │   :443
+                    :22   │   :80   :443
               ┌───────────┴───────────┐
-              │   NixOS firewall       │   only 22/tcp and 443/tcp(+udp)
-              │   (networking.firewall)│   are accepted
+              │   NixOS firewall       │   only 22/tcp, 80/tcp and
+              │   (networking.firewall)│   443/tcp(+udp) are accepted
               └───────────┬───────────┘
                           │
               ┌───────────┴───────────┐
@@ -59,7 +59,13 @@ Every machine runs the same Hostinger KVM image, so they share
 `modules/host.nix` unchanged. To manage another machine, add a
 `hosts/<name>.nix` file: the file name becomes the flake output name, and an
 optional `hosts/<name>.extra.nix` next to it is imported as an extra NixOS
-module for per-machine overrides.
+module for per-machine overrides. The `.extra.nix` file is a module fragment,
+not a machine: it is never registered as a flake output of its own.
+
+A `hosts/<name>.nix` file needs `hostname`, `vhosts` and `acmeEmail` — the
+modules read them from the host config, and the evaluation fails without
+them. `domain`, `publicIp` and `secrets` are optional (they fall back to a
+placeholder). See `hosts/nixos.nix` for the shape.
 
 ```bash
 ./scripts/rebuild.sh              # this VPS
@@ -132,7 +138,7 @@ $EDITOR .env
 |---|---|
 | `PUBLIC_DOMAIN` | The base domain this machine serves. The public hostnames are derived from it. |
 | `ACME_EMAIL` | The contact address registered with the ACME certificate authority. |
-| `PUBLIC_IP` | The public IPv4 address of this machine. Every hostname it serves needs a DNS A record pointing here. |
+| `PUBLIC_IP` | The public IPv4 address of this machine. Every hostname it serves needs a DNS A record pointing here. The configuration warns while this is still the placeholder. |
 | `FLAKE_OUTPUT` | The flake output to build: the file name of the machine in `hosts/`, without the `.nix` extension. |
 
 `.env` is gitignored. Nix cannot read it directly — a flake evaluation is
@@ -180,7 +186,7 @@ Full instructions, including the Portainer first-run flow, are in
 
 | Layer | What is done |
 | --- | --- |
-| Network | NixOS firewall enabled; only 22/tcp and 443/tcp+udp accepted. nftables deliberately off (Docker needs iptables). Reverse-path filtering strict. |
+| Network | NixOS firewall enabled; only 22/tcp, 80/tcp and 443/tcp+udp accepted (80/tcp is for the ACME HTTP-01 challenge and Caddy's HTTP→HTTPS redirect). nftables deliberately off (Docker needs iptables). Reverse-path filtering strict. |
 | SSH | Key-based, `MaxAuthTries 3`, no X11 forwarding, idle sessions disconnected, fail2ban with escalating ban times. |
 | Kernel | NixOS Wiki hardening baseline (kptr_restrict, rp_filter, no redirects, no BPF JIT, no ftrace, io_uring disabled for unprivileged). Module loading locked after boot. |
 | Docker | `overlay2`, `live-restore`, `icc=false`, `no-new-privileges=true`, `journald` log driver, weekly prune, journal capped at 512 MB. The `docker` group is left **empty** because it is root-equivalent. |

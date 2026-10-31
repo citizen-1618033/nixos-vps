@@ -34,7 +34,10 @@
           entryType = if builtins.isAttrs entry then entry.type else entry;
           isFile = entryType == "regular" || entryType == "file";
         in
-        isFile && lib.hasSuffix ".nix" name
+        # `hosts/<name>.extra.nix` is a module fragment, not a machine, so it
+        # must not be registered as one: it has none of the fields
+        # hostConfig is expected to have, and evaluating it as a host fails.
+        isFile && lib.hasSuffix ".nix" name && !(lib.hasSuffix ".extra.nix" name)
       ) (builtins.attrNames (builtins.readDir hostDir));
 
       mkHost =
@@ -61,6 +64,12 @@
       nixosConfigurations = builtins.listToAttrs (map mkHost hostFileNames);
 
       # `nix build .#nixos` builds one host's system closure.
+      #
+      # Note: a plain build is a *pure* evaluation, so it cannot see the
+      # environment and every deployment value falls back to its placeholder
+      # (domain "example.com", ACME email "admin@example.com"). The result is
+      # a valid system, but with a Caddyfile for the wrong hostname. Use
+      # scripts/rebuild.sh, which passes --impure, to build the real thing.
       packages.${system} = builtins.mapAttrs (
         _name: host: host.config.system.build.toplevel
       ) self.nixosConfigurations;

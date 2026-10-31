@@ -45,9 +45,12 @@
 
   # Loaded explicitly rather than relying on udev to autoload them, so that
   # `security.lockKernelModules` (see modules/security.nix) cannot leave the
-  # machine without disk or network after boot. All of these are listed as
-  # available in the `qemu-guest` profile's `boot.initrd.availableKernelModules`,
-  # so they exist in the NixOS kernel.
+  # machine without disk or network after boot. All of these exist in the
+  # NixOS kernel: the first four are in the `qemu-guest` profile's
+  # `boot.initrd.availableKernelModules`, and `virtio_rng` is in that profile's
+  # `boot.initrd.kernelModules` (loaded rather than merely available, so it is
+  # not in the `available` set). The kernel ships it as `virtio-rng.ko`;
+  # modprobe normalises the `-`/`_` difference, so `virtio_rng` resolves.
   boot.kernelModules = [
     "virtio_blk"
     "virtio_net"
@@ -77,6 +80,13 @@
 
   # cloud-init owns IP assignment, so DHCP must be off (otherwise it races
   # cloud-init).
+  #
+  # Note: this makes cloud-init the single point of failure for networking.
+  # The config defines no `networking.interfaces`, so NixOS generates no
+  # systemd-networkd units of its own; the address comes from the provider's
+  # cloud-init drive. If that drive carries no network-config, the machine
+  # comes up without an address and systemd-networkd-wait-online stalls for
+  # 120s before the boot continues. docs/DEPLOY.md §6 has a check for this.
   networking.useDHCP = lib.mkForce false;
 
   # hVPS drives provisioning by running bare-name commands (sh, cloud-init,

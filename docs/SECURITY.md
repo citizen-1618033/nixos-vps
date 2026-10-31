@@ -213,9 +213,12 @@ Safe here because:
 * `modules/host.nix` loads the virtio modules (`virtio_blk`, `virtio_net`,
   `virtio_pci`, `virtio_scsi`, `virtio_rng`) explicitly rather than relying on
   udev, so the machine cannot come up without disk or network once the
-  lockdown is in place. Every one of those names is listed in the
-  `qemu-guest` profile's `boot.initrd.availableKernelModules`, which is the
-  set of modules that exist in the NixOS kernel.
+  lockdown is in place. All of them exist in the NixOS kernel: the first four
+  are listed in the `qemu-guest` profile's `boot.initrd.availableKernelModules`,
+  and `virtio_rng` is in that profile's `boot.initrd.kernelModules` (it is
+  loaded, not merely available, so it is not in the `available` set). The
+  kernel ships the file as `virtio-rng.ko`; modprobe normalises the `-`/`_`
+  difference, so `virtio_rng` still resolves.
 
 **Cost:** any module you need later has to be added to `boot.kernelModules`
 and the machine rebooted. **Note:** this takes effect on the next reboot, so

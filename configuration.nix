@@ -53,5 +53,10 @@
     ++ lib.optional (lib.hasInfix "example.com" hostConfig.acmeEmail) ''
       hostConfig.acmeEmail is still the placeholder "admin@example.com".
       Set ACME_EMAIL in .env to a real contact address.
+    ''
+    ++ lib.optional ((hostConfig.publicIp or "203.0.113.10") == "203.0.113.10") ''
+      hostConfig.publicIp is still the placeholder "203.0.113.10".
+      Set PUBLIC_IP in .env to this machine's public IPv4 address, and point
+      each of the DNS A records at it.
     '';
 }

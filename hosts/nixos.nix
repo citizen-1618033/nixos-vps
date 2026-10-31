@@ -32,6 +32,11 @@ in
   # environment (ACME_EMAIL in .env).
   acmeEmail = env.acmeEmail;
 
+  # The public IPv4 address of this machine. Every hostname listed in `vhosts`
+  # needs a DNS A record pointing here. Comes from the environment
+  # (PUBLIC_IP in .env).
+  publicIp = env.publicIp;
+
   # Public hostnames served by this machine.
   #
   # Each entry becomes one Caddy site block with its own certificate:

@@ -141,11 +141,18 @@
     auto-optimise-store = true;
 
     # Only root may use the privileged Nix daemon operations.
-    trusted-users = [ "root" ];
+    #
+    # `mkDefault`, not a plain list: NixOS already sets `trusted-users` to
+    # [ "root" ], and list options concatenate, so stating it plainly would
+    # produce "root root" in nix.conf.
+    trusted-users = lib.mkDefault [ "root" ];
 
     # The official cache.nixos.org signing key. NixOS sets this by default;
-    # restating it makes the trust boundary explicit.
-    trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
+    # restating it makes the trust boundary explicit. `mkDefault` for the
+    # same reason as `trusted-users` above.
+    trusted-public-keys = lib.mkDefault [
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+    ];
   };
 
   # Collect garbage automatically. Docker images and build cache are not in

@@ -79,9 +79,9 @@ in
 
   config = lib.mkIf cfg.enable {
     virtualisation.oci-containers = {
-      # The Docker backend. nixpkgs sets `virtualisation.docker.enable = true`
-      # for us, generates a systemd unit, and orders it after docker.service
-      # and docker.socket.
+      # The Docker backend. modules/docker.nix sets
+      # `virtualisation.docker.enable = true`; nixpkgs then generates a
+      # systemd unit and orders it after docker.service and docker.socket.
       backend = "docker";
 
       containers.portainer = {
@@ -118,8 +118,9 @@ in
       };
     };
 
-    # The Portainer container needs the Docker socket to exist.
-    systemd.services."docker-portainer".after = [ "docker.socket" ];
+    # The Portainer container needs the Docker socket to exist. nixpkgs
+    # already orders the unit after docker.socket for the Docker backend, but
+    # it does not require it, so state that dependency explicitly.
     systemd.services."docker-portainer".requires = [ "docker.socket" ];
   };
 }

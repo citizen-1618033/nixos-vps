@@ -34,8 +34,4 @@ in
   # The public IPv4 address of this machine. Every hostname it serves needs a
   # DNS A record pointing here.
   publicIp = fromEnv "PUBLIC_IP" "203.0.113.10";
-
-  # The flake output to build, i.e. the file name of the machine in hosts/
-  # without the .nix extension.
-  flakeOutput = fromEnv "FLAKE_OUTPUT" "nixos";
 }
