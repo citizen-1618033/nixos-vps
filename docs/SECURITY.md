@@ -30,8 +30,8 @@ Design responses, in order:
 * Keep the number of internet-reachable ports at two (22 and 443).
 * Make the container runtime the place where untrusted code runs, and strip
   the daemon's own defaults in the direction of "less privilege".
-* Make the management interface unreachable except through a TLS proxy, and
-  put a real certificate in front of it.
+* Make the management interface unreachable from the network: published on
+  loopback and reached over an SSH tunnel.
 
 ---
 
@@ -47,19 +47,95 @@ There is no `security.firewall` option in nixpkgs. The module is
 *Source:* `nixos/modules/services/networking/firewall.nix` on `nixos-26.05`;
 the NixOS Manual, "Firewall" section.
 
-### 2.2 Only 22 and 443 are accepted
+### 2.2 Only 22 is accepted
 
 ```nix
 networking.firewall.allowedTCPPorts = [ 22 ];
 ```
 
-`services.openssh` opens 22 automatically. Caddy opens 80 and 443 for itself
-through `services.caddy.openFirewall`, whose default is `false` — so it is set
-explicitly to `true` in `modules/proxy.nix`. Port 80 is needed for the ACME
-HTTP-01 challenge; it also serves Caddy's automatic HTTP→HTTPS redirect.
+`services.openssh` opens 22 automatically, and nothing else is opened by the
+configuration.
 
-`services.caddy.openFirewall` also opens UDP 443, because Caddy enables
-HTTP/3 by default.
+**The public ports are the edge's, and the firewall does not govern them.**
+The edge is a container, and Docker publishes its 80 and 443 ahead of the
+input chain — the same property that keeps Portainer behind loopback is what
+lets the edge serve the internet. Opening 80 and 443 here would open nothing
+and say otherwise, so they are not opened.
+
+**If you want the firewall back in the path of the published ports**, Docker's
+`DOCKER-USER` chain is the place to do it: it is evaluated before Docker's own
+accept rules, so a rule there drops what the NixOS configuration would have
+dropped. A rule that accepts 80 and 443 and rejects the rest would put every
+container port on this host back behind the firewall — including the ones a
+future stack publishes by accident.
+
+**Two traps, and both of them take the box down.**
+
+1. **The chain does not exist until Docker starts.** Docker creates
+   `DOCKER-USER` when the daemon sets up its own rules, and the NixOS
+   firewall starts well before that: `firewall.service` is `sysinit.target`,
+   `docker.service` is `multi-user.target`. So
+   `networking.firewall.extraCommands` runs *before* the chain exists, and the
+   firewall's start script is `sh -e` — a failing rule aborts it, and the
+   `INPUT` chain never gets its jump to `nixos-fw`. The result is no firewall
+   at all, not a stricter one. Either create the chain first
+   (`iptables -w -N DOCKER-USER || true`) or run the rules from a unit
+   ordered after `docker.service`.
+
+2. **A blanket drop also drops the application stack's own traffic.**
+   Container-to-container traffic on a user-defined network goes through the
+   host's `FORWARD` chain, and `DOCKER-USER` is the first thing it meets. A
+   rule that drops everything else silently breaks an application whose
+   services talk to each other over their own network.
+
+A rule set that does both jobs — keeps the firewall in the path of the
+published ports, and leaves the application's internal networking alone:
+
+```nix
+systemd.services.docker-firewall = {
+  description = "Filter the ports Docker publishes";
+  wantedBy = [ "multi-user.target" ];
+  after = [ "docker.service" ];
+  serviceConfig = {
+    Type = "oneshot";
+    RemainAfterExit = true;
+    ExecStart = pkgs.writeShellScript "docker-firewall" ''
+      iptables -w -N DOCKER-USER 2>/dev/null || true
+      iptables -w -F DOCKER-USER
+      iptables -w -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+      iptables -w -A DOCKER-USER -i br-+ -o br-+ -j ACCEPT
+      iptables -w -A DOCKER-USER -p tcp --dport 80 -j ACCEPT
+      iptables -w -A DOCKER-USER -p tcp --dport 443 -j ACCEPT
+      iptables -w -A DOCKER-USER -j DROP
+    '';
+  };
+};
+```
+
+Three things to know about it:
+
+* `--dport` is the **container's** port, not the published one: the packet has
+  already been DNAT'd by the time it reaches `FORWARD`.
+* The `-i br-+ -o br-+` rule accepts traffic between *any* two Docker
+  bridges, which is looser than Docker's own network isolation. A stricter
+  version enumerates the application's networks instead. Both versions need
+  adapting to the stack that is actually running.
+* Everything published on `0.0.0.0` other than 80 and 443 is dropped by the
+  last rule — which is the point, but it is also a new thing to break.
+
+Verify it rather than trust it:
+
+```bash
+iptables -L DOCKER-USER -n -v
+# and check that the application still talks to itself over its own network
+```
+
+**That is not applied here, and the reason is worth stating.** The edge is the
+box's front door, and a firewall rule that drops a published port takes the
+front door down with it — a mistake in the rule is an outage, and the edge's
+own stack is where the operator looks for the cause. The rule above is
+documented so that it can be applied deliberately, with the edge's logs open
+in the next terminal.
 
 ### 2.3 `networking.nftables.enable = false` — deliberately
 
@@ -108,11 +184,13 @@ From `virtualisation.oci-containers.containers.<name>.ports`:
 
 Docker installs its own DNAT rules ahead of the NixOS input chain, so the
 same is true of `docker run -p`. This is why **Portainer is published on
-`127.0.0.1:9443` only** and fronted by Caddy. The firewall is then genuinely
-in the path.
+`127.0.0.1:9443` only** and reached over an SSH tunnel. The firewall is then
+genuinely in the path.
 
 The same applies to every application container you deploy later: publish on
-`127.0.0.1` and put a reverse proxy in front of it.
+`127.0.0.1` unless the port is meant to be public. **The edge is the
+exception, and it is the whole front door** — see §2.2 for what that costs the
+firewall, and the `DOCKER-USER` chain that puts it back in the path.
 
 ---
 
@@ -275,7 +353,7 @@ configuration options on Linux.
   host paths and expect specific ownership. **Decide before pulling any
   images** — remapping changes the ownership of everything in
   `/var/lib/docker`.
-* **`userland-proxy = false`** — would break Caddy's access to Portainer,
+* **`userland-proxy = false`** — would break the host's access to Portainer,
   because the host cannot reach a container's published port over loopback
   without the userland proxy.
 * **Rootless Docker** (`virtualisation.docker.rootless.enable`) — the cleanest
@@ -368,7 +446,8 @@ start a container with the host filesystem mounted.
 
 Mitigations that are in place:
 
-* The Portainer UI is not reachable except through Caddy over TLS.
+* The Portainer UI is not reachable at all from the internet: it is published
+  on loopback, and the tunnel that reaches it is the operator's own.
 * Portainer's first run requires a one-time setup token, so a freshly started
   instance cannot be claimed by a scanner that found the port.
 * The setup token is only valid for five minutes.
@@ -379,9 +458,9 @@ Mitigations that are in place:
 
 | Port | Purpose | Exposed here? |
 | --- | --- | --- |
-| 9443 | UI and API (TLS) | Loopback only, fronted by Caddy on 443 |
-| 443 | TLS, all public hostnames | Yes, via Caddy |
-| 80 | ACME HTTP-01 challenge + HTTP→HTTPS redirect | Yes, via Caddy |
+| 9443 | UI and API (TLS) | Loopback only — over an SSH tunnel |
+| 443 | TLS, all public hostnames | Yes, by the edge container |
+| 80 | ACME HTTP-01 challenge + HTTP→HTTPS redirect | Yes, by the edge container |
 | 22 | SSH | Yes |
 | 8000 | TCP tunnel for Edge Agents | **No** — not needed without Edge Compute |
 | 9000 | Legacy HTTP UI | **No** — Portainer itself frames this as legacy |
@@ -389,16 +468,23 @@ Mitigations that are in place:
 
 *Source:* <https://docs.portainer.io/start/requirements-and-prerequisites>.
 
-### 6.5 Caddy in front
+### 6.5 The edge in front
 
-Caddy obtains a Let's Encrypt certificate over the ACME HTTP-01 challenge and
-renews it automatically. Portainer serves 9443 with a self-signed certificate,
-so the proxy hop uses `tls_insecure_skip_verify`. That is acceptable because
-the hop never leaves the host; the public session is still fully verified by
-the browser.
+**The TLS front door is the edge container of the application stack, not this
+configuration.** It obtains a Let's Encrypt certificate over the ACME
+HTTP-01 challenge and renews it automatically, and it is the only process on
+the machine that could: HTTP-01 needs inbound port 80, and the edge holds
+it.
 
-HSTS, `X-Content-Type-Options` and `Referrer-Policy` are set, and the
-`Server` header is removed.
+**That is why there is no Caddy here.** A second one would fight the edge for
+the ports, and the loser is a container that never starts — a failure with no
+log line to read, because the container never executed a line of anything.
+
+**Portainer is not behind a proxy any more, and it does not need to be.** It
+is published on loopback, which no route from the internet reaches, and the
+operator reaches it over an SSH tunnel. The cost is that Portainer's own
+self-signed certificate is the one the browser sees — the same warning it
+gave before, minus the real certificate in front of it.
 
 *Source:* <https://caddyserver.com/docs/automatic-https>.
 
@@ -410,7 +496,6 @@ Every secret on these machines lives in `secrets/` in the repository checkout
 | Secret | Mechanism | Notes |
 | --- | --- | --- |
 | Portainer setup token | `docker run --env-file <checkout>/secrets/portainer.env` | Rendered by `virtualisation.oci-containers.containers.<name>.environmentFiles`. |
-| Caddy environment | `EnvironmentFile=-<checkout>/secrets/caddy.env` | The `-` prefix makes it optional; systemd ignores a missing file. |
 
 The path is written in the configuration **relative to the checkout**, never
 as an absolute path. The checkout root itself is resolved at evaluation time
@@ -458,11 +543,9 @@ systemd.services.example.serviceConfig.LoadCredential = [ "token:<checkout>/secr
 
 ### 6.7 One certificate per hostname, and no wildcards
 
-Each entry in `hostConfig.vhosts` becomes its own Caddy site block, and
-therefore its own certificate. Caddy requests a certificate for each hostname
-it serves, and any names on another machine are never touched —
-certificates are per fully-qualified name, so the two machines do not
-interfere.
+The edge obtains a certificate for every hostname it serves, and any names on
+another machine are never touched — certificates are per fully-qualified
+name, so two machines do not interfere.
 
 **There are no wildcard certificates here.** The DNS provider in use has no
 public API, so a DNS-01 challenge is not available and only HTTP-01 is. That
@@ -473,21 +556,11 @@ means:
   allows 50 new certificates per registered domain per week — but it does not
   scale to dozens of names.
 * If a wildcard is ever needed, it requires a DNS-01 challenge with an API
-  token. The two routes in nixpkgs are:
-  * `pkgs.caddy.withPlugins`, with a DNS provider plugin and the provider's
-    credentials. The nixpkgs `caddy` package is built with only the standard
-    modules, so there is no ready-made `caddy-dns/*` package to start from.
-  * NixOS's `security.acme` module, which uses lego and therefore has ~150 DNS
-    providers built in, with credentials passed as systemd credentials rather
-    than through the Nix store. The resulting certificate is then pointed at
-    with `services.caddy.virtualHosts.<name>.useACMEHost`.
+  token. The edge's own panel asks for the directory and the credentials, and
+  the panel is where such a thing belongs: the credentials are per deployment
+  and do not belong in the Nix store of the machine.
 
-The `security.acme` route is usually the less painful one, because the
-credentials never enter the world-readable Nix store.
-
-*Source:* <https://github.com/go-acme/lego/blob/master/docs/content/dns/zz_gen_*.md>;
-`security.acme.certs.<name>.dnsProvider` and `.credentialFiles` in the nixpkgs
-option index.
+*Source:* <https://github.com/go-acme/lego/blob/master/docs/content/dns/zz_gen_*.md>.
 
 
 ---
@@ -553,8 +626,9 @@ monthly at minimum.
 These are known, deliberate, and not fixed by this configuration.
 
 1. **Portainer is root-equivalent.** It holds the Docker socket by design.
-   Mitigation: TLS only, setup token, a strong administrator credential, and
-   treat a Portainer compromise as a host compromise.
+   Mitigation: published on loopback and reached only over an SSH tunnel,
+   setup token, a strong administrator credential, and treat a Portainer
+   compromise as a host compromise.
 2. **`docker.sock` inside a container is root-equivalent for anything Portainer
    launches.** A container with the socket mounted can do the same thing.
 3. **The `docker` group is empty, but root has unrestricted access**, and root
@@ -568,7 +642,9 @@ These are known, deliberate, and not fixed by this configuration.
 7. **Strict reverse-path filtering could drop traffic** if the provider's
    network turns out to be asymmetric. The escape hatch is in §2.4.
 8. **The NixOS firewall does not gate container ports.** Every application you
-   deploy must publish on loopback and go through a proxy.
+   deploy must publish on loopback, or be reached through the edge. See §2.2
+   for the `DOCKER-USER` chain, which puts the firewall back in the path of
+   the published ports.
 9. **Kernel module lockdown can surprise you** when you need a module that was
    not anticipated. See §4.3.
 

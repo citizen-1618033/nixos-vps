@@ -13,8 +13,8 @@ provider's Hostinger KVM NixOS image, which already has a NixOS installation at
 ## 0. Prerequisites
 
 * A domain name whose **A records point at this VPS's public IP address.**
-  Caddy uses them for the Let's Encrypt HTTP-01 challenge, which needs inbound
-  TCP port 80 to work. See §1.
+  The application stack's edge uses them for the Let's Encrypt HTTP-01
+  challenge, which needs inbound TCP port 80 to work. See §1.
 * The `git` binary on the VPS. If it is missing:
   `nix-shell -p git --run 'git --version'`
 * Root access. The provider's provisioning completes the handover of the
@@ -25,19 +25,21 @@ provider's Hostinger KVM NixOS image, which already has a NixOS installation at
 
 ## 1. DNS
 
-In the zone for your domain, add an A record for **each** public hostname this
-machine serves. For the app server:
+In the zone for your domain, add an A record for **each** public hostname the
+edge serves. **Which hostnames those are belongs to the application
+stack** — its edge serves them all, and its runbook lists the records. For
+the app server, that is one record per hostname in the app zone, for example:
 
 | Name | Type | TTL | RDATA |
 |---|---|---|---|
-| `app` | A | **300** | this VPS's public IPv4 |
-| `portainer.app` | A | **300** | this VPS's public IPv4 |
+| `app.app` | A | **300** | this VPS's public IPv4 |
+| `api.app` | A | **300** | this VPS's public IPv4 |
 
 Leave the apex records alone — `@` (203.0.113.10), `www`, `mail`, `_dmarc` and
 the MX record all point at the other instance.
 
 **Use TTL 300 for new records.** A zone's default TTL of 14400 makes resolvers
-cache the NXDOMAIN for the full TTL. Caddy's ACME HTTP-01 challenge cannot
+cache the NXDOMAIN for the full TTL. The edge's ACME HTTP-01 challenge cannot
 complete until that negative cache expires, and Let's Encrypt allows only 5
 failed authorizations per hostname per hour, so a long TTL can leave you locked
 out of a working configuration.
@@ -45,11 +47,10 @@ out of a working configuration.
 Verify from outside your own network:
 
 ```bash
-dig +short app.example.com
-dig +short portainer.app.example.com
+dig +short app.app.example.com
 ```
 
-Both must return this VPS's public IP **before** you deploy.
+Every hostname must return this VPS's public IP **before** you deploy.
 
 ---
 
@@ -92,45 +93,43 @@ $EDITOR .env
 
 ```bash
 PUBLIC_DOMAIN=example.com
-ACME_EMAIL=admin@example.com
 PUBLIC_IP=203.0.113.10
 FLAKE_OUTPUT=nixos
 SECRETS_DIR=secrets
 ```
 
-* `PUBLIC_DOMAIN` — the base domain this machine serves. The public hostnames
-  are derived from it, so `portainer.app.$PUBLIC_DOMAIN` and so on.
-* `ACME_EMAIL` — the contact address registered with the ACME certificate
-  authority. Used for expiry notices and abuse reports.
-* `PUBLIC_IP` — the public IPv4 address of this machine. Every hostname it
-  serves needs a DNS A record pointing here (§1).
+* `PUBLIC_DOMAIN` — the base domain this machine serves. It identifies the
+  deployment; the public hostnames belong to the application stack.
+* `PUBLIC_IP` — the public IPv4 address of this machine. Every DNS A record
+  for the hostnames the edge serves points here (§1).
 * `FLAKE_OUTPUT` — the flake output to build: the file name of the machine in
   `hosts/`, without the `.nix` extension.
 * `SECRETS_DIR` — where the secret files live, relative to the repository
   root. Defaults to `secrets`.
 
+There is no `ACME_EMAIL` any more: the certificates are obtained by the edge,
+and it keeps the account. The contact address lives in that project's own
+environment file.
+
 `.env` is gitignored and never committed. It is read by `scripts/rebuild.sh`,
 which exports the values and evaluates the flake with `--impure` — a flake
 evaluation is pure, so it cannot see the environment by itself.
 
-`hosts/nixos.nix` holds the machine's own settings. Its `vhosts` list is the
-set of public hostnames this machine serves; each entry gets its own Caddy
-site block and its own certificate:
+`hosts/nixos.nix` holds the machine's own settings:
 
 ```nix
 {
   hostname = "nixos";
-
-  vhosts = [
-    { name = "portainer.app.${env.domain}"; upstream = "portainer"; }
-    # { name = "app.${env.domain}"; upstream = "127.0.0.1:3000"; }
-  ];
+  domain = env.domain;
+  publicIp = env.publicIp;
+  secrets = { dir = env.secretsDir; };
 }
 ```
 
-* `name` — the public hostname. It needs the DNS A record from §1.
-* `upstream` — `"portainer"` for the Portainer UI, or `"<host>:<port>"` for a
-  container that publishes that port on loopback.
+**There is no hostname list here.** The public hostnames of this machine are
+the application's, and the edge serves them all — it is configured in that
+stack's panel, not in this repository. What this configuration owns is the
+machine, and the services it runs on loopback.
 
 While the domain is still the placeholder `example.com`, `nixos-rebuild` prints
 a warning. That warning is the reminder that you have not finished.
@@ -153,7 +152,6 @@ Create the directory and the files:
 ```
 secrets/
   portainer.env     Portainer container environment   (docker run --env-file)
-  caddy.env         Caddy environment                 (optional)
 ```
 
 The directory is gitignored. If you change `SECRETS_DIR` in `.env`, add the
@@ -220,8 +218,9 @@ provider's original `/etc/nixos/configuration.nix`.
 ## 6. Verify
 
 ```bash
-# Firewall: only 22, 80 and 443 should be open.
-#   80 is needed for the ACME HTTP-01 challenge and Caddy's HTTP->HTTPS redirect.
+# Firewall: only 22 should be open.
+#   80 and 443 are the edge's, and Docker publishes them ahead of the input
+#   chain, so they are not in this chain at all.
 sudo iptables -S nixos-fw | grep -E 'dport|icmp'
 
 # The machine has an address and the network is up.
@@ -232,18 +231,17 @@ ip -br addr
 cloud-init status --long
 
 # Services
-systemctl status docker.service caddy.service docker-portainer.service fail2ban.service
+systemctl status docker.service docker-portainer.service fail2ban.service
 
 # Portainer is on loopback only:
 ss -ltnp | grep 9443
 #   LISTEN 0 4096 127.0.0.1:9443 0.0.0.0:*
 
-# Caddy is public on 443:
-ss -ltnp | grep 443
-
-# The certificate was issued:
-journalctl -u caddy.service | grep -i certificate
-curl -I https://portainer.app.example.com
+# Nothing on the host itself serves 80 or 443. The listeners you see there
+# are Docker's own userland proxy for the edge's published ports, not a host
+# service:
+ss -ltnp | grep -E ':(80|443)\s'
+#   LISTEN 0 4096 0.0.0.0:80 0.0.0.0:*   users:(("docker-proxy",pid=1234))
 ```
 
 The Portainer container is managed by systemd under the name
@@ -268,9 +266,14 @@ that one:
 grep PORTAINER_SETUP_TOKEN /root/nix-vps/secrets/portainer.env
 ```
 
-Open `https://portainer.app.example.com` in a browser, paste the token,
-and create the administrator account. Your token has no expiry, so there is
-no time pressure.
+Open a tunnel to it, paste the token, and create the administrator account:
+
+```bash
+ssh -L 9443:127.0.0.1:9443 <this-machine>
+# then open https://localhost:9443
+```
+
+Your token has no expiry, so there is no time pressure.
 
 If you did not set one, Portainer generates its own and prints it in the
 logs. That one **is** only valid for five minutes:
@@ -329,34 +332,29 @@ with an SSH key, lock it down.
 
 ## 9. Putting an application on its own hostname
 
-1. **In Portainer**, create the container and publish its port on **loopback
-   only**, for example `127.0.0.1:3000:3000`. Publishing on `0.0.0.0` exposes
-   the port to the internet and bypasses the NixOS firewall, because Docker
-   installs its own DNAT rules ahead of it.
+**The application stack brings its own edge, and the edge holds the public
+ports.** So a hostname is the application's business, and this repository has
+nothing to add to it.
+
+1. **In the application stack**, the edge is a container that publishes 80 and
+   443 and terminates TLS for every hostname the box serves. Its panel is
+   where the routes live, and the template in that project is the shape of a
+   good configuration.
 
 2. **Add a DNS A record** for the hostname, TTL 300, pointing at this VPS.
 
-3. **Add a vhost entry** to `hosts/nixos.nix`:
-
-   ```nix
-   {
-     name = "myapp.app.${env.domain}";
-     upstream = "127.0.0.1:3000";
-   }
-   ```
-
-4. **Rebuild:**
-
-   ```bash
-   ./scripts/rebuild.sh
-   ```
-
-Caddy then requests a certificate for the new name and starts proxying it.
+3. **Add the route** in the application's panel, and apply it.
 
 > Each hostname needs its own A record **and** its own certificate. There are
 > no wildcard certificates here, because the DNS provider has no API for a
 > DNS-01 challenge. Let's Encrypt allows 50 new certificates per registered
 > domain per week, so a handful of applications is fine.
+
+**A container port that is not the edge's belongs on loopback.** Publishing on
+`0.0.0.0` exposes the port to the internet and bypasses the NixOS firewall,
+because Docker installs its own DNAT rules ahead of it. The store's console
+and the monitor's interface are published that way in the application's own
+stack, on `127.0.0.1`, and reached over an SSH tunnel.
 
 ---
 
@@ -375,24 +373,24 @@ in
 
   domain = env.domain;
 
-  acmeEmail = env.acmeEmail;
-
   publicIp = env.publicIp;
 
-  vhosts = [
-    { name = "other.${env.domain}"; upstream = "portainer"; }
-  ];
   secrets = {
     dir = env.secretsDir;
   };
 }
 ```
 
-`acmeEmail` is required — the modules read it from `hostConfig` and the
+`hostname` is required — the modules read it from `hostConfig` and the
 evaluation fails without it. `domain`, `publicIp` and `secrets` are optional
 and fall back to a placeholder. `env` is the same `../lib/env.nix` that reads
 the deployment values from the environment. The `secrets` path is relative to
 the checkout, so a machine needs no absolute path anywhere.
+
+**There is no hostname list and no ACME account in a host file.** The public
+hostnames are the application's, and the edge of the application stack serves
+them all; it also holds the ACME account. A machine file describes the
+machine, nothing else.
 
 ```bash
 FLAKE_OUTPUT=other ./scripts/rebuild.sh
@@ -464,9 +462,9 @@ The configuration also runs `docker system prune -f` weekly
 
 ```bash
 journalctl -u docker-portainer.service -f   # Portainer
-journalctl -u caddy.service -f              # reverse proxy
 journalctl -k | grep DROP                   # firewall drops
 docker logs portainer                       # Portainer's own output
+docker logs <the edge container>            # the box's front door
 ```
 
 ---

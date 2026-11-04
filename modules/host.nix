@@ -100,6 +100,36 @@
     curl
     wget
     nano
+
+    # The SSH client (`ssh`, `ssh-keygen`) is not listed here on purpose: it
+    # comes from `programs.ssh`, which nixpkgs puts in `environment.corePackages`
+    # — so it is on PATH for every user without being repeated here.
+
+    # **Git, and the configuration cannot be deployed without it.** The flake
+    # is built from `git+file://`, which asks git for the tracked tree, and
+    # scripts/rebuild.sh asks git twice more: once for the checkout itself, and
+    # once for whether the secret files are tracked. Without git on the box,
+    # the rebuild script refuses to run.
+    git
+
+    # **OpenSSL, for the values and the hashes.** `openssl rand` for a secret
+    # worth having (the Portainer setup token, an age key, a TLS private
+    # key), and `openssl passwd -6` for the SHA-512 crypt hash that NixOS
+    # wants for a user's password — `hashedPassword` takes it as it is, and
+    # a plaintext password in a Nix file is a plaintext password in the world
+    # -readable Nix store.
+    openssl
+
+    # **`mkpasswd`, the other way to make a password hash.** NixOS's own
+    # documentation names it, and it is the tool that asks for the hash in
+    # the format the option wants:
+    #
+    #     mkpasswd --method=sha-512
+    #
+    # Note that this is the `mkpasswd` package and not `whois`: the whois
+    # package installs only the `whois` binary, while `mkpasswd` is built
+    # separately from the same source.
+    mkpasswd
   ];
 
   systemd.services.qemu-guest-agent.environment.PATH =

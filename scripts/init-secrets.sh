@@ -52,7 +52,6 @@ create() {
 }
 
 create "$dir/portainer.env"
-create "$dir/caddy.env"
 
 # The Portainer setup token: a fresh Portainer refuses to be claimed by
 # anyone who finds the port, so it needs a one-time token. Generate one here
@@ -60,7 +59,7 @@ create "$dir/caddy.env"
 # anywhere but the file that needs it.
 if ! grep -q '^PORTAINER_SETUP_TOKEN=' "$dir/portainer.env"; then
   # 16 random bytes, hex encoded. Read from /dev/urandom rather than from
-  # openssl, which is not necessarily on PATH on NixOS.
+  # openssl, so the script does not depend on a package being installed.
   token="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   printf 'PORTAINER_SETUP_TOKEN=%s\n' "$token" >>"$dir/portainer.env"
   chmod 0600 "$dir/portainer.env"
@@ -82,10 +81,14 @@ Next steps
 
      cd $repo_root && ./scripts/rebuild.sh
 
-3. Open https://portainer.app.<your-domain> and paste the token.
+3. Open a tunnel to Portainer and paste the token:
 
-About $dir/caddy.env
---------------------
-Optional. It is only needed for ACME EAB credentials or any other Caddy
-setting that wants an environment variable. Leave it empty and ignore it.
+     ssh -L 9443:127.0.0.1:9443 <this-machine>
+
+   then open https://127.0.0.1:9443 in the browser.
+
+About Portainer
+---------------
+It is published on 127.0.0.1 only, so nothing on the internet can reach it.
+The tunnel above is the only way in.
 EOF

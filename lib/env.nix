@@ -79,10 +79,6 @@ in
   # hostnames are derived from it.
   domain = fromEnv "PUBLIC_DOMAIN" "example.com";
 
-  # The contact address registered with the ACME certificate authority.
-  # Used for expiry notices and abuse reports.
-  acmeEmail = fromEnv "ACME_EMAIL" "admin@example.com";
-
   # The public IPv4 address of this machine. Every hostname it serves needs a
   # DNS A record pointing here.
   publicIp = fromEnv "PUBLIC_IP" "203.0.113.10";

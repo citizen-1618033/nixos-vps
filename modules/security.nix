@@ -17,8 +17,9 @@
   networking.firewall = {
     enable = true;
 
-    # Only SSH is opened here. Caddy opens 80 and 443 for itself via
-    # `services.caddy.openFirewall` (see modules/proxy.nix).
+    # Only SSH is opened here. The public ports belong to the edge container
+    # of the application stack, and Docker publishes them ahead of the input
+    # chain, so opening them here would open nothing.
     allowedTCPPorts = [ 22 ];
 
     # Reverse-path filtering. This VPS has a single network interface, so the

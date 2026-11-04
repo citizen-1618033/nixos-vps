@@ -1,5 +1,5 @@
 {
-  description = "Security-hardened NixOS 26.05 VPS with Docker and Portainer CE behind a TLS reverse proxy";
+  description = "Security-hardened NixOS 26.05 VPS with Docker and Portainer CE on loopback";
 
   inputs = {
     # Pinned to the stable 26.05 release branch. The exact revision is
@@ -67,9 +67,9 @@
       #
       # Note: a plain build is a *pure* evaluation, so it cannot see the
       # environment and every deployment value falls back to its placeholder
-      # (domain "example.com", ACME email "admin@example.com"). The result is
-      # a valid system, but with a Caddyfile for the wrong hostname. Use
-      # scripts/rebuild.sh, which passes --impure, to build the real thing.
+      # (domain "example.com", public IP "203.0.113.10"). The result is a
+      # valid system. Use scripts/rebuild.sh, which passes --impure, to build
+      # the real thing.
       packages.${system} = builtins.mapAttrs (
         _name: host: host.config.system.build.toplevel
       ) self.nixosConfigurations;

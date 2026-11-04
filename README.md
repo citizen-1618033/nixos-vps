@@ -2,10 +2,13 @@
 
 A security-hardened **NixOS 26.05** configuration for Hostinger KVM VPSs, with
 **Docker** and **Portainer CE** for running and managing application
-containers, and **Caddy** in front of Portainer for real TLS.
+containers.
 
 Everything is declarative, pinned in a flake, and reproducible from this
-repository.
+repository. **The front door is not here**: the public ports belong to the
+edge container of the application stack, which terminates TLS for every
+public hostname on the machine. What this configuration owns is the machine
+itself — the daemon, the firewall, and the services it runs on loopback.
 
 ---
 
@@ -16,33 +19,52 @@ repository.
                           │
                     :22   │   :80   :443
               ┌───────────┴───────────┐
-              │   NixOS firewall       │   only 22/tcp, 80/tcp and
-              │   (networking.firewall)│   443/tcp(+udp) are accepted
+              │   NixOS firewall       │   22/tcp only. The edge's 80/443
+              │   (networking.firewall)│   are published by Docker, ahead of
+              │                        │   this chain, so they are not in it
               └───────────┬───────────┘
                           │
               ┌───────────┴───────────┐
-              │  Caddy  (systemd)     │  Let's Encrypt certificate,
-              │  services.caddy       │  automatic renewal
+              │  the edge (container)  │  the application stack's Caddy:
+              │  docker compose        │  Let's Encrypt certificates,
+              │                        │  automatic renewal
               └───────────┬───────────┘
-                          │  127.0.0.1:9443  (loopback only)
+                          │
               ┌───────────┴───────────┐
-              │  Portainer CE         │  systemd unit:
-              │  docker-portainer     │  docker-portainer.service
+              │  your application      │
+              │  stacks                │
               └───────────┬───────────┘
-                          │  /var/run/docker.sock
+                          │
               ┌───────────┴───────────┐
               │  Docker Engine        │  overlay2, journald logs,
               │  docker.service       │  live-restore, no-new-privileges
               └───────────┬───────────┘
                           │
-                  your application containers
+              ┌───────────┴───────────┐
+              │  Portainer CE         │  systemd unit:
+              │  docker-portainer     │  docker-portainer.service
+              └───────────┬───────────┘
+                          │  127.0.0.1:9443  (loopback only)
+                          │  reached over an SSH tunnel
 ```
 
-The important part of that diagram: **Portainer is published on `127.0.0.1`
-only.** Docker installs its own DNAT rules ahead of the NixOS firewall, so a
-container port published on `0.0.0.0` is reachable no matter what
-`networking.firewall` says. Binding to loopback is what keeps the firewall
-meaningful.
+Two things in that diagram are worth reading twice.
+
+**Portainer is published on `127.0.0.1` only.** Docker installs its own DNAT
+rules ahead of the NixOS firewall, so a container port published on `0.0.0.0`
+is reachable no matter what `networking.firewall` says. Binding to loopback is
+what keeps the firewall meaningful. Portainer is reached over an SSH tunnel:
+
+```bash
+ssh -L 9443:127.0.0.1:9443 <this-machine>
+```
+
+**The edge's 80 and 443 are outside the firewall's reach.** Docker publishes
+them ahead of the input chain, so the NixOS rules do not govern them — the
+same property that keeps Portainer behind loopback is what lets the edge
+serve the internet. If you want the firewall back in the path of the
+published ports, Docker's `DOCKER-USER` chain is the place to do it; see
+[docs/SECURITY.md](docs/SECURITY.md).
 
 ---
 
@@ -53,7 +75,7 @@ machine; the file name is the flake output name.
 
 | File | Machine | Serves |
 |---|---|---|
-| `hosts/nixos.nix` | this VPS | `portainer.app.$PUBLIC_DOMAIN` |
+| `hosts/nixos.nix` | this VPS | nothing publicly — the edge serves the hostnames |
 
 Every machine runs the same Hostinger KVM image, so they share
 `modules/host.nix` unchanged. To manage another machine, add a
@@ -62,11 +84,10 @@ optional `hosts/<name>.extra.nix` next to it is imported as an extra NixOS
 module for per-machine overrides. The `.extra.nix` file is a module fragment,
 not a machine: it is never registered as a flake output of its own.
 
-A `hosts/<name>.nix` file needs `hostname`, `vhosts` and `acmeEmail` — the
-modules read them from the host config, and the evaluation fails without
-them. `domain`, `publicIp` and `secrets` are optional (they fall back to a
-placeholder). The `secrets` path is relative to the checkout. See
-`hosts/nixos.nix` for the shape.
+A `hosts/<name>.nix` file needs `hostname` — the modules read it from the host
+config, and the evaluation fails without it. `domain`, `publicIp` and
+`secrets` are optional (they fall back to a placeholder). The `secrets` path
+is relative to the checkout. See `hosts/nixos.nix` for the shape.
 
 ```bash
 ./scripts/rebuild.sh              # this VPS
@@ -77,17 +98,15 @@ FLAKE_OUTPUT=other ./scripts/rebuild.sh   # a machine added later
 
 ## DNS
 
-Each public hostname a machine serves needs a DNS A record pointing at that
-machine's public IP, and nothing else. For the app server:
-
-| Name | Type | TTL | RDATA |
-|---|---|---|---|
-| `app` | A | 300 | app server's public IPv4 |
-| `portainer.app` | A | 300 | app server's public IPv4 |
+Each public hostname the edge serves needs a DNS A record pointing at this
+machine's public IP, and nothing else. **Which hostnames those are belongs to
+the application stack** — it is the edge that serves them, and the edge is
+configured in its own panel — so the records are listed in that project's
+runbook rather than here.
 
 Use a **low TTL (300)** for new records. A zone's long TTL makes resolvers
-cache the NXDOMAIN for hours, and Caddy's ACME HTTP-01 challenge cannot
-complete until it expires.
+cache the NXDOMAIN for hours, and the ACME HTTP-01 challenge cannot complete
+until it expires.
 
 The apex records (`@`, `www`, `mail`, `_dmarc`, MX) point at the other
 instance and are left alone.
@@ -108,7 +127,7 @@ instance and are left alone.
 | `flake.lock` | The exact nixpkgs revision. Do not edit by hand. |
 | `.env.example` | Template for the deployment values. Copy it to `.env`. |
 | `lib/env.nix` | Reads the deployment values from the environment, and resolves every path against the checkout. |
-| `hosts/nixos.nix` | This machine: hostname, public hostnames, secret paths. **Edit this.** |
+| `hosts/nixos.nix` | This machine: hostname, domain, secret paths. **Edit this.** |
 | `modules/secrets.nix` | Wires the per-machine secret files to the services that need them. |
 | `secrets/` | The per-machine secret files. Gitignored, never in the Nix store. **Created by `scripts/init-secrets.sh`.** |
 | `scripts/init-secrets.sh` | Creates the secret directory and files on a machine. |
@@ -117,8 +136,7 @@ instance and are left alone.
 | `modules/host.nix` | Disk layout, boot loader, cloud-init, guest agent. Mirrors the provider image. |
 | `modules/security.nix` | Firewall, kernel hardening, fail2ban, Nix store hygiene, log retention. |
 | `modules/docker.nix` | Docker daemon and its hardening options. |
-| `modules/portainer.nix` | Portainer CE as a systemd-managed container. |
-| `modules/proxy.nix` | Caddy: TLS termination and reverse proxy for each public hostname. |
+| `modules/portainer.nix` | Portainer CE as a systemd-managed container, on loopback. |
 | `docs/DEPLOY.md` | Step-by-step deployment, first-run setup, updates, rollback. |
 | `docs/SECURITY.md` | Every hardening decision, its rationale and its primary source. |
 | `docs/research/` | The research that preceded the configuration, with citations. |
@@ -127,9 +145,9 @@ instance and are left alone.
 
 ## Configuration values
 
-The deployment's own values — the domain, the ACME contact address, the
-public IP — live in `.env` in the repository root, not in this file and not
-in the tracked tree. Copy the template and fill it in:
+The deployment's own values — the domain, the public IP — live in `.env` in
+the repository root, not in this file and not in the tracked tree. Copy the
+template and fill it in:
 
 ```bash
 cp .env.example .env
@@ -138,9 +156,8 @@ $EDITOR .env
 
 | Variable | Meaning |
 |---|---|
-| `PUBLIC_DOMAIN` | The base domain this machine serves. The public hostnames are derived from it. |
-| `ACME_EMAIL` | The contact address registered with the ACME certificate authority. |
-| `PUBLIC_IP` | The public IPv4 address of this machine. Every hostname it serves needs a DNS A record pointing here. The configuration warns while this is still the placeholder. |
+| `PUBLIC_DOMAIN` | The base domain this machine serves. It identifies the deployment and is checked against its placeholder; the public hostnames themselves belong to the application stack. |
+| `PUBLIC_IP` | The public IPv4 address of this machine. Every DNS A record for the hostnames the edge serves points here. The configuration warns while this is still the placeholder. |
 | `FLAKE_OUTPUT` | The flake output to build: the file name of the machine in `hosts/`, without the `.nix` extension. |
 | `SECRETS_DIR` | Where the secret files live, relative to the repository root. Defaults to `secrets`. |
 
@@ -168,15 +185,16 @@ cp -a /etc/nixos /root/nixos-template-backup   # keep the provider's template
 rsync -av --exclude .git <path-to-this-repo>/ root@<vps-ip>:/root/nix-vps/
 cd /root/nix-vps
 
-# 1. Set your domain, contact address and public IP.
+# 1. Set your domain and public IP.
 cp .env.example .env
 $EDITOR .env
 
 # 2. Create the secret files (mode 0600, not in git).
 ./scripts/init-secrets.sh
 
-# 3. Confirm DNS already points here.
-dig +short portainer.app.example.com
+# 3. Confirm DNS already points here, for the hostnames the application
+#    stack serves. The records are listed in that project's runbook.
+dig +short app.app.example.com
 
 # 4. Build and switch. Keep a console session open.
 ./scripts/rebuild.sh
@@ -195,12 +213,12 @@ Full instructions, including the Portainer first-run flow, are in
 
 | Layer | What is done |
 | --- | --- |
-| Network | NixOS firewall enabled; only 22/tcp, 80/tcp and 443/tcp+udp accepted (80/tcp is for the ACME HTTP-01 challenge and Caddy's HTTP→HTTPS redirect). nftables deliberately off (Docker needs iptables). Reverse-path filtering strict. |
+| Network | NixOS firewall enabled; only 22/tcp is accepted by it. The edge's 80/443 are published by Docker and so sit outside the input chain — the same property that keeps Portainer on loopback. nftables deliberately off (Docker needs iptables). Reverse-path filtering strict. |
 | SSH | Key-based, `MaxAuthTries 3`, no X11 forwarding, idle sessions disconnected, fail2ban with escalating ban times. |
 | Kernel | NixOS Wiki hardening baseline (kptr_restrict, rp_filter, no redirects, no BPF JIT, no ftrace, io_uring disabled for unprivileged). Module loading locked after boot. |
 | Docker | `overlay2`, `live-restore`, `icc=false`, `no-new-privileges=true`, `journald` log driver, weekly prune, journal capped at 512 MB. The `docker` group is left **empty** because it is root-equivalent. |
 | Portainer | Digest-pinned image, published on loopback only, `docker.sock` mounted (unavoidable — it is how Portainer works), first-run setup token required. |
-| TLS | Real Let's Encrypt certificate via Caddy, HSTS, HTTP/3. |
+| TLS | Real Let's Encrypt certificates, held by the edge container, which is the only process on the box that can complete an HTTP-01 challenge. |
 | Store & logs | Build sandbox on, store auto-optimised, GC after 30 days, journal size-capped. |
 
 The reasoning and the primary source for every line of that table is in
@@ -210,34 +228,30 @@ The reasoning and the primary source for every line of that table is in
 
 ## Managing applications
 
-Point a browser at `https://portainer.app.$PUBLIC_DOMAIN` and paste the
-`PORTAINER_SETUP_TOKEN` from `secrets/portainer.env`. From there:
-**Containers → Add container**, or **Stacks → Add stack** for compose files.
+Open a tunnel to Portainer and paste the `PORTAINER_SETUP_TOKEN` from
+`secrets/portainer.env`:
+
+```bash
+ssh -L 9443:127.0.0.1:9443 <this-machine>
+# then open https://localhost:9443
+```
+
+From there: **Containers → Add container**, or **Stacks → Add stack** for
+compose files.
 
 Application secrets are Portainer's job, not Nix's: set them on the container
 in Portainer, and they never pass through this repository.
 
-To put an application on its own hostname:
-
-1. Publish the container's port on **loopback only** in Portainer, for
-   example `127.0.0.1:3000:3000`.
-2. Add a DNS A record for its hostname.
-3. Add a vhost entry to `hosts/nixos.nix`:
-
-   ```nix
-   {
-     name = "myapp.app.${env.domain}";
-     upstream = "127.0.0.1:3000";
-   }
-   ```
-
-4. Rebuild: `./scripts/rebuild.sh`.
+**A hostname is the application's own business.** The edge holds the public
+ports, so the application stack's edge serves every public hostname on the
+box, and it is configured in that stack's panel rather than in this
+repository. The records it needs are listed in that project's runbook.
 
 Two things to know:
 
 * **Container ports are not firewalled by NixOS.** When you publish a port in
-  Portainer, bind it to `127.0.0.1` and put a reverse proxy in front of it,
-  the same way Portainer itself is deployed here. Publishing on `0.0.0.0`
+  Portainer, bind it to `127.0.0.1` unless it is meant to be public — the
+  same way Portainer itself is deployed here. Publishing on `0.0.0.0`
   exposes the port to the whole internet.
 * **`no-new-privileges` is on by default** for every container. If an image
   genuinely needs it, add the security option `no-new-privileges:false` to
@@ -252,7 +266,6 @@ the *path*:
 | File | Fed to | Contains |
 |---|---|---|
 | `portainer.env` | Portainer container, `docker run --env-file` | `PORTAINER_SETUP_TOKEN=…` |
-| `caddy.env` | Caddy, `EnvironmentFile=-…` | optional (ACME EAB etc.) |
 
 `scripts/init-secrets.sh` creates the directory, creates the files, and
 generates the Portainer setup token for you. Because the setup token comes

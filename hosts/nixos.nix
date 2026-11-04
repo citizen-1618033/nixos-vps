@@ -23,50 +23,28 @@ in
   hostname = "nixos";
 
   # The base domain this machine serves. It comes from the environment
-  # (PUBLIC_DOMAIN in .env), and the public hostnames below are derived from
-  # it.
+  # (PUBLIC_DOMAIN in .env). It identifies the deployment; the public
+  # hostnames themselves belong to the application stack.
   domain = env.domain;
 
-  # Contact address registered with the ACME certificate authority
-  # (Let's Encrypt). Used for expiry notices and abuse reports. Comes from the
-  # environment (ACME_EMAIL in .env).
-  acmeEmail = env.acmeEmail;
+  # **No ACME account here.** The certificates for this machine's public
+  # hostnames are obtained by the edge — the container in the application
+  # stack that holds ports 80 and 443 — and it keeps the account. The edge
+  # needs inbound port 80 for the HTTP-01 challenge, so it is the only process
+  # on the box that could obtain one.
 
-  # The public IPv4 address of this machine. Every hostname listed in `vhosts`
-  # needs a DNS A record pointing here. Comes from the environment
+  # The public IPv4 address of this machine. Every DNS A record for the
+  # hostnames the edge serves points here. Comes from the environment
   # (PUBLIC_IP in .env).
   publicIp = env.publicIp;
 
-  # Public hostnames served by this machine.
+  # **No hostname list here.** The public hostnames of this machine are the
+  # application's, and the edge serves all of them — it is configured in the
+  # panel of the application stack, not in this repository. The DNS records
+  # those hostnames need are listed in that project's runbook.
   #
-  # Each entry becomes one Caddy site block with its own certificate:
-  #   name     the public hostname. It needs a DNS A record pointing at this
-  #            machine's public IP, otherwise the ACME HTTP-01 challenge
-  #            cannot be completed and no certificate is issued.
-  #   upstream what to reverse proxy to:
-  #            "portainer"  -> the Portainer UI on 127.0.0.1:9443
-  #            "<host>:<port>" -> a container that publishes that port on
-  #                            loopback, e.g. "127.0.0.1:3000"
-  #
-  # Publishing a container port on a routable address bypasses the NixOS
-  # firewall, because Docker installs its own DNAT rules ahead of it. So an
-  # application's port must be published on 127.0.0.1 and reached through a
-  # reverse proxy like this.
-  vhosts = [
-    {
-      name = "portainer.app.${env.domain}";
-      upstream = "portainer";
-    }
-
-    # Reserved for the application zone. Point this at the loopback port
-    # that your application container publishes, for example 127.0.0.1:3000.
-    # It is commented out until that container exists: an entry pointing at a
-    # port with nothing behind it answers with a 502.
-    # {
-    #   name = "app.${env.domain}";
-    #   upstream = "127.0.0.1:3000";
-    # },
-  ];
+  # The box's own services are published on loopback and reached over an SSH
+  # tunnel; see modules/portainer.nix.
 
   # Secret files for this machine.
   #

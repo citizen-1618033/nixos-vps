@@ -17,8 +17,10 @@
 #     0.0.0.0 is reachable no matter what `networking.firewall` says.
 #     (nixos/modules/virtualisation/oci-containers.nix)
 #   * Binding to 127.0.0.1 means the NixOS firewall still decides who can
-#     reach Portainer, because the only way in is Caddy on 443.
-#     (see modules/proxy.nix)
+#     reach Portainer, because there is no way in from the network at all.
+#     The operator reaches it over an SSH tunnel:
+#
+#         ssh -L 9443:127.0.0.1:9443 <this-machine>
 {
   config,
   lib,

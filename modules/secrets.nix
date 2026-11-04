@@ -44,12 +44,4 @@ in
   virtualisation.oci-containers.containers.portainer.environmentFiles =
     lib.mkIf config.portainer.enable
       [ "${dir}/portainer.env" ];
-
-  # Caddy's environment, for ACME EAB credentials and similar. The leading
-  # "-" makes the file optional: systemd ignores it when it does not exist.
-  #
-  # This is set on the unit directly rather than through
-  # `services.caddy.environmentFile`, because that option takes an absolute
-  # path and cannot carry the "-" prefix.
-  systemd.services.caddy.serviceConfig.EnvironmentFile = "-${dir}/caddy.env";
 }
